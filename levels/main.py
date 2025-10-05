@@ -32,7 +32,7 @@ TRIGGER_SIZE   = (0.22, 0.16)   # (width, height)
 # Sleep trigger (small, PNG bed)
 SLEEP_TRIGGER_CENTER = (0.300, -0.320)
 SLEEP_TRIGGER_SIZE   = (0.160, 0.120)   # <-- EDIT: bed trigger size (w, h)
-SHOW_SLEEP_HITBOX    = True            # <-- EDIT: show bed hitbox on start
+SHOW_SLEEP_HITBOX    = False            # <-- EDIT: show bed hitbox on start
 
 BED_IMAGE            = "assets/models/astroBed.png"  # icon shown on map
 BED_SCALE            = 0.10
@@ -68,7 +68,7 @@ WALLS = [
     (-0.020, 0.860, 1.060, 0.300),
     (0.820, -0.220, 0.420, 0.160)
 ]
-SHOW_WALLS = True  # toggle with F7
+SHOW_WALLS = False  # toggle with F7
 
 # ======= ENERGY HUD (100..0) =======
 # 11 PNGs: index 0 = 100 (full), index 10 = 0 (empty)
@@ -87,9 +87,10 @@ ENERGY_ICON_PATHS = [
 ]
 
 # ---- ENERGY HUD size/pos (barra larga y delgada) ----
-ENERGY_HUD_SCALE_X = 1   # largo (X)
-ENERGY_HUD_SCALE_Z = 0.12   # alto  (Z)
-ENERGY_HUD_POS     = (-0.90, 0, 0.88)   # top-left aprox; mueve X/Z a gusto
+ENERGY_HUD_SCALE_X = 0.6      # largo
+ENERGY_HUD_SCALE_Z = 0.05     # alto
+# cuánto empujar la imagen hacia la derecha, en unidades de aspect2d
+ENERGY_IMG_CENTER_OFFSET_X = 0.30
 
 # ======= SLEEP LOADING BAR (images 0..100) =======
 # IMPORTANT: use PNGs (convert SVG → PNG). Order: 0,10,20,...,100
@@ -108,15 +109,15 @@ SLEEP_BAR_IMAGE_PATHS = [
 ]
 
 # Sleep overlay style: True = light beige bg + dark text, False = dark bg + white text
-SLEEP_OVERLAY_LIGHT    = True
+SLEEP_OVERLAY_LIGHT    = False
 SLEEP_DURATION_SECONDS = 8.0
 
 # ---- Sleep bar (overlay) size/pos (IMAGEN y FALLBACK) ----
-SLEEP_BAR_SCALE_X = 2.40   # largo (X) de IMAGEN de carga
-SLEEP_BAR_SCALE_Z = 0.08   # alto  (Z) de IMAGEN de carga
-SLEEP_BAR_HALF_W  = 1.20   # mitad de ancho FALLBACK
-SLEEP_BAR_HALF_H  = 0.018  # mitad de alto  FALLBACK
-SLEEP_BAR_MARGIN  = 0.02   # margen interno FALLBACK
+SLEEP_BAR_SCALE_X = 1
+SLEEP_BAR_SCALE_Z = 0.06
+SLEEP_BAR_HALF_W  = 1.20
+SLEEP_BAR_HALF_H  = 0.018
+SLEEP_BAR_MARGIN  = 0.02
 
 # ============ 2D utils ============
 def aabb_overlap(ax, az, aw, ah, bx, bz, bw, bh):
@@ -169,10 +170,7 @@ class AnimatedEntity(Entity):
             self.set_texture(self.frames[self.idx])
 
 class TriggerZone:
-    """
-    Rectángulo AABB en render2d. Si visible=True dibuja un quad (hitbox).
-    Ahora permite cambiar centro y tamaño dinámicamente.
-    """
+    """Rectángulo AABB en render2d. Si visible=True dibuja un quad (hitbox)."""
     def __init__(self, base_app: ShowBase, parent, center=(0,0), size=(0.3,0.3), visible=False, color=(1,1,0,0.25)):
         self.base = base_app
         self.parent = parent
@@ -566,6 +564,16 @@ class Game(ShowBase):
                                            frameColor=bg,
                                            frameSize=(-1.5, 1.5, -1.1, 1.1),
                                            pos=(0,0,0))
+        # Fuerza a estar arriba por si no ocultas algo
+        self.loading_overlay.setBin("fixed", 100)
+
+        # --- OCULTAR HUD DE ENERGÍA MIENTRAS DURE EL SUEÑO ---
+        if hasattr(self, "hud_anchor") and self.hud_anchor:
+            self.hud_anchor.hide()
+        if getattr(self, "energy_img", None):
+            self.energy_img.hide()
+        if getattr(self, "energy_lbl", None):
+            self.energy_lbl.hide()
 
         # Title + info
         DirectLabel(parent=self.loading_overlay, text="Sleeping...", scale=0.065, pos=(0,0,0.45),
@@ -583,7 +591,7 @@ class Game(ShowBase):
         if self.sleep_images_loaded:
             self.sleep_img = OnscreenImage(parent=self.loading_overlay, image=self.sleep_textures[0])
             self.sleep_img.setTransparency(TransparencyAttrib.M_alpha)
-            self.sleep_img.setScale(SLEEP_BAR_SCALE_X, 1, SLEEP_BAR_SCALE_Z)  # long & thin
+            self.sleep_img.setScale(SLEEP_BAR_SCALE_X, 1, SLEEP_BAR_SCALE_Z)
             self.sleep_img.setPos(0, 0, -0.25)
         else:
             self.loading_back = DirectFrame(
@@ -627,7 +635,7 @@ class Game(ShowBase):
         if self.loading_time >= self.loading_duration:
             # restore energy to 100%
             self.energy_level = 10
-            self.walk_accum = 0.0  # opcional: limpia acumulado tras dormir
+            self.walk_accum = 0.0
             self._update_energy_hud()
             # close overlay
             if self.loading_overlay:
@@ -637,6 +645,14 @@ class Game(ShowBase):
             self.loading_back = None
             self.loading_bar = None
             self.ui_blocked = False
+
+            # --- MOSTRAR DE NUEVO EL HUD DE ENERGÍA ---
+            if hasattr(self, "hud_anchor") and self.hud_anchor:
+                self.hud_anchor.show()
+            if getattr(self, "energy_img", None):
+                self.energy_img.show()
+            if getattr(self, "energy_lbl", None):
+                self.energy_lbl.show()
             self._clear_movement()
 
     # ----- 3D: enter/exit -----
@@ -949,17 +965,27 @@ class Game(ShowBase):
         return ok
 
     def _build_energy_hud(self):
-        # Top HUD: long & thin image bar
         if self.energy_icons_loaded:
             self.energy_img = OnscreenImage(parent=self.layer_ui, image=self.energy_textures[0])
             self.energy_img.setTransparency(TransparencyAttrib.M_alpha)
-            self.energy_img.setScale(ENERGY_HUD_SCALE_X, 1, ENERGY_HUD_SCALE_Z)  # largo X, alto Z
-            self.energy_img.setPos(*ENERGY_HUD_POS)
+            self.energy_img.setScale(ENERGY_HUD_SCALE_X, 1, ENERGY_HUD_SCALE_Z)
+
+            # --- ANCLA a la esquina superior-izquierda ---
+            if not hasattr(self, "hud_anchor"):
+                self.hud_anchor = self.aspect2d.attachNewNode("hud_anchor")
+            self.hud_anchor.setPos(self.a2dLeft + 0.02, 0, self.a2dTop - 0.04)
+
+            # cuelga la imagen del ancla y colócala alineada a la izquierda
+            self.energy_img.reparentTo(self.hud_anchor)
+            half_w = ENERGY_HUD_SCALE_X * 0.5
+            self.energy_img.setPos(half_w + ENERGY_IMG_CENTER_OFFSET_X, 0, 0)
+
             self._update_energy_hud()
         else:
             self.energy_lbl = DirectLabel(parent=self.layer_ui,
                                           text=f"Energy: {self.energy_level}/10",
-                                          scale=0.055, pos=(-1.05,0,0.9),
+                                          scale=0.055,
+                                          pos=(-1.05,0,0.9),
                                           frameColor=(0,0,0,0.4))
 
     def _update_energy_hud(self):
